@@ -35,10 +35,10 @@ def training_loop_l2reg(n_epochs, optimizer, model, loss_fn,
             loss = loss_fn(outputs, labels)
 
             # l2 regularization
-            l2_lambda = 0.001
-            l2_norm = sum(p.pow(2.0).sum()
-                          for p in model.parameters())  # <1>
-            loss = loss + l2_lambda * l2_norm
+            # l2_lambda = 0.001
+            # l2_norm = sum(p.pow(2.0).sum()
+            #               for p in model.parameters())  # <1>
+            # loss = loss + l2_lambda * l2_norm
 
             # zero out the gradient, propagate the loss, perform the optimization step
             optimizer.zero_grad()
@@ -61,9 +61,15 @@ def show_img(t_img:torch.tensor) -> None:
     return 
 
 #################################### MODELS ####################################
-class NetBatchNorm(nn.Module):
+import torch, kernels
+
+class MyModel(nn.Module):
     def __init__(self, n_chans1=32):
-        super().__init__()
+        super(MyModel, self).__init__()
+        self.gaussian_blur = nn.Conv2d(3, 3, kernel_size=3, padding=1)  
+        self.sharpen_kernel = nn.Conv2d(3, 3, kernel_size=3, padding=1)
+        self.edge_detection = nn.Conv2d(3, 3, kernel_size=3, padding=1)
+        
         self.n_chans1 = n_chans1
         self.conv1 = nn.Conv2d(3, n_chans1, kernel_size=3, padding=1)
         self.conv1_batchnorm = nn.BatchNorm2d(num_features=n_chans1)
@@ -73,7 +79,17 @@ class NetBatchNorm(nn.Module):
         self.fc1 = nn.Linear(2 * 8 * 8 * n_chans1, 32)
         self.fc2 = nn.Linear(32, 8)
         
+        with torch.no_grad():
+            self.gaussian_blur.bias.zero_()
+            self.sharpen_kernel.bias.zero_()
+            self.edge_detection.bias.zero_()
+            self.gaussian_blur.weight[:] = kernels.gaussian_blur3x3
+            self.sharpen_kernel.weight[:] = kernels.sharpen_kernel
+            self.edge_detection.weight[:] = kernels.edge_detection_RIDGE0
     def forward(self, x):
+        out = self.gaussian_blur(x)
+        out = self.edge_detection(out)
+        
         out = self.conv1_batchnorm(self.conv1(x))
         out = F.max_pool2d(torch.tanh(out), 2)
         out = self.conv2_batchnorm(self.conv2(out))
@@ -82,33 +98,12 @@ class NetBatchNorm(nn.Module):
         out = torch.tanh(self.fc1(out))
         out = self.fc2(out)
         return out
-    
-class NetDepth(nn.Module):
-    def __init__(self, n_chans1=32):
-        super().__init__()
-        self.n_chans1 = n_chans1
-        self.conv1 = nn.Conv2d(3, n_chans1, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(n_chans1, n_chans1 // 2, kernel_size=3,
-                               padding=1)
-        self.conv3 = nn.Conv2d(n_chans1 // 2, n_chans1 // 2,
-                               kernel_size=3, padding=1)
-        self.fc1 = nn.Linear(2 * 4 * 4 * n_chans1, 32)
-        self.fc2 = nn.Linear(32, 5)
-        
-    def forward(self, x):
-        out = F.max_pool2d(torch.relu(self.conv1(x)), 2)
-        out = F.max_pool2d(torch.relu(self.conv2(out)), 2)
-        out = F.max_pool2d(torch.relu(self.conv3(out)), 2)
-        out = out.view(-1, 2 * 4 * 4 * self.n_chans1)
-        out = torch.relu(self.fc1(out))
-        out = self.fc2(out)
-        return out
 
 ####################################### GLOBAL VARIABLES ##########################################
 path = "/home/rick/Ri/SecondYear/2ndSemester/AI-Lab/project_private/temp_train"
 device = (torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')) # train on gpu if available
-
-
+model_path = "/home/rick/Ri/SecondYear/2ndSemester/AI-Lab/project_private/"
+model_name = "model1.pt"
 ################################## SCRIPT #######################################
 # resize and transform images into tensors
 # normalization is done later, so we don't include it in the first transforms
@@ -133,31 +128,28 @@ train_data = [datafolder[x] for x in train_indices]
 assert len(train_data) == train_indices.shape[0]
 val_data = [datafolder[x] for x in val_indices]
 assert len(val_data) == val_indices.shape[0]
-# create the training and validation tensors
 
-train_imgs = {0:[], 1:[], 2:[], 3:[], 4:[], 5:[], 6:[], 7:[]} # can this be made a dictionary of tensors straight-away?
+# create the training and validation tensors
+train_imgs = {c:[] for c, x in enumerate(datafolder.classes)} # train_imgs.keys() are integers representing classes
+val_imgs = {c:[] for c, x in enumerate(datafolder.classes)}
+# extract images and labels from the DataLoader
 for c, (img_t, label) in enumerate(train_data):
     if c % 1000 == 0:
         print(f"processing img {c}")
     train_imgs[label].append(img_t)
-
-for key in train_imgs:
-    train_imgs[key] = torch.stack(train_imgs[key])
-
-for key in train_imgs:
-    print(train_imgs[key].shape, key)
     
-val_imgs = {0:[], 1:[], 2:[], 3:[], 4:[], 5:[], 6:[], 7:[]} # can this be made a dictionary of tensors straight-away?
 for c, (img_t, label) in enumerate(val_data):
     if c % 1000 == 0:
         print(f"processing img {c}")
     val_imgs[label].append(img_t)
 
+# stack the images into an extra dimension
+for key in train_imgs:
+    train_imgs[key] = torch.stack(train_imgs[key])
+
 for key in val_imgs:
     val_imgs[key] = torch.stack(val_imgs[key])
 
-for key in val_imgs:
-    print(val_imgs[key].shape, key)
 # normalize the images belonging to each class! 
 # NOTE: normalize for each class,
 # not over all the images
@@ -169,23 +161,20 @@ nval_imgs = []
 class_means = {}
 class_std = {}
 
-for cl in train_imgs:
-    class_means[cl] = torch.mean(train_imgs[cl], (0, 2, 3))
-    class_std[cl] = torch.std(train_imgs[cl], (0, 2, 3))
-    
 for key in train_imgs:
+    class_means[key] = torch.mean(train_imgs[key], (0, 2, 3))
+    class_std[key] = torch.std(train_imgs[key], (0, 2, 3))
     ntrain_imgs.append(((train_imgs[key] - class_means[key][None, :, None, None]) / class_std[key][None, :, None, None], key))
-
+    
 # normalize the validation set
 class_means = {}
 class_std = {}
 
-for cl in val_imgs:
-    class_means[cl] = torch.mean(val_imgs[cl], (0, 2, 3))
-    class_std[cl] = torch.std(train_imgs[cl], (0, 2, 3))
-    
 for key in val_imgs:
+    class_means[key] = torch.mean(val_imgs[key], (0, 2, 3))
+    class_std[key] = torch.std(train_imgs[key], (0, 2, 3))
     nval_imgs.append(((val_imgs[key] - class_means[key][None, :, None, None]) / class_std[key][None, :, None, None], key))
+    
 # further preprocess necessary to perfom forward pass
 n_train_imgs = []
 
@@ -199,6 +188,7 @@ for label in range(len(nval_imgs)):
     for k in range(nval_imgs[label][0].shape[0]):
         n_val_imgs.append((nval_imgs[label][0][k], label))
 print(len(n_val_imgs))
+
 # create loaders for training set and validation set. Also perform another shuffle
 train_loader = torch.utils.data.DataLoader(n_train_imgs, batch_size=64, shuffle=True)
 val_loader = torch.utils.data.DataLoader(n_val_imgs, batch_size=64, shuffle=True)
@@ -209,34 +199,31 @@ for img_t, label in train_loader:
 for imt_t, label in val_loader:
     print(img_t.shape, label, type(label), len(label), sep="\n")
     break
+
 n_out = len(datafolder.classes)
 print(f"[*] Dataset contains {n_out} classes)")
 
-
-
 numel_list = [p.numel() for p in model.parameters()]
-print(sum(numel_list), numel_list)
+print("[*]Number of parameters:", sum(numel_list), numel_list)
 
 
 
-model = NetBatchNorm()  
-optimizer = optim.SGD(model.parameters(), lr=.6e-2)  
+model = MyModel()
+
+optimizer = optim.SGD(model.parameters(), lr=.6e-2, weight_decay=1e-3) # weight_decay acts like l2 regularization  
 loss_fn = nn.CrossEntropyLoss()  
 n_epochs = 20
 
 # train the model
-training_loop_l2reg(  
-    n_epochs = n_epochs,
-    optimizer = optimizer,
-    model = model,
-    loss_fn = loss_fn,
-    train_loader = train_loader,
-)
+# training_loop_l2reg(  
+#     n_epochs = n_epochs,
+#     optimizer = optimizer,
+#     model = model,
+#     loss_fn = loss_fn,
+#     train_loader = train_loader,
+# )
 
 # validation
-validate(model, val_loader)
+# validate(model, val_loader)
 
-
-model_path = "/home/rick/Ri/SecondYear/2ndSemester/AI-Lab/project_private/"
-model_name = "model1.pt"
-torch.save(model.state_dict(), model_path + model_name) 
+# torch.save(model.state_dict(), model_path + model_name) 
