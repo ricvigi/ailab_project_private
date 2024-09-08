@@ -115,12 +115,12 @@ class MyModel(nn.Module):
         return out
 
 ####################################### GLOBAL VARIABLES ##########################################
-path = ""
+path = "~/"
 assert (path != ""), "[*]ERROR: You forgot to include the data path in the path variable"
 device = (torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')) # train on gpu if available
-model_path = ""
+model_path = "~/"
 assert (model_path != ""), "[*]ERROR: You forgot to include the model path in the model_path variable"
-model_name = ""
+model_name = "xraymodel.pt"
 assert (model_name != ""), "[*]Error: You forgot to include the model name in the model_name variable"
 
 
@@ -191,7 +191,7 @@ class_std = {}
 for key in val_imgs:
     class_means[key] = torch.mean(val_imgs[key], (0, 2, 3))
     class_std[key] = torch.std(val_imgs[key], (0, 2, 3))
-    #class_std[key] = torch.std(train_imgs[key], (0, 2, 3))
+    #class_std[key] = torch.std(train_imgs[key], (0, 2, 3)) # validation performance is slightly better if we use the standard deviation of the training set... why?
     nval_imgs.append(((val_imgs[key] - class_means[key][None, :, None, None]) / class_std[key][None, :, None, None], key))
 
 # further preprocess necessary to perfom forward pass
@@ -226,7 +226,7 @@ print(f"[*] Dataset contains {n_out} classes)")
 model = MyModel()
 
 
-# load previously trained state dict
+# load previously trained state dict if it exists
 if os.path.exists(model_path + model_name):
     print(f"[*] Resuming training. Loading previous state dict")
     model.load_state_dict(torch.load(model_path + model_name))
